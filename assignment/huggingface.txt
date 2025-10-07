@@ -1,0 +1,143 @@
+!pip install transformers datasets huggingface_hub
+
+!pip install transformers datasets sentencepiece torch accelerate scikit-learn
+
+import datasets
+from datasets import load_dataset, DatasetDict
+from transformers import pipeline
+import torch
+import pandas as pd # 데이터 확인용
+
+device = 0 if torch.cuda.is_available() else -1
+print(f"사용 가능한 디바이스: {'GPU' if device == 0 else 'CPU'}")
+
+!pip install -U datasets
+
+from datasets import load_dataset
+import pandas as pd
+
+amazon_review_dataset = load_dataset("amazon_polarity",split="train")
+print("로드완료\n",amazon_review_dataset)
+
+#일부 데이터만 선택
+num_samples_to_use = 30
+sample_subset_raw = amazon_review_dataset.select(range(num_samples_to_use))
+
+#불필요한 데이터 지우기
+sample_subset = sample_subset_raw.remove_columns(['label'])
+
+print("로드된 데이터셋 정보:")
+print(sample_subset)
+
+# 데이터셋 확인을 위해 Pandas DataFrame으로 변환
+df_check = pd.DataFrame(sample_subset)
+print("\n데이터셋 일부 미리보기 (DataFrame):")
+display(df_check.head(10))
+
+summarizer = pipeline(
+    task="summarization",
+    model="facebook/bart-large-cnn",
+    device=device
+)
+
+import re
+
+def clean_text(text):
+    #2개 이상 반복되는 특수 문자를 공백으로 대체
+    text = re.sub(r'[\^\_]{2,}', ' ', text)
+
+    #3번 이상 반복되는 알파벳을 2번으로 줄이기.
+    text = re.sub(r'([a-z])\1{2,}', r'\1\1', text, flags=re.IGNORECASE)
+
+    #여러 개의 공백을 하나로 줄이고 앞뒤 공백 제거
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def summarize_content(example):
+  cleaned_content =  clean_text(example['content'])
+  summary_result = summarizer(
+        cleaned_content,
+        max_length=150,
+        min_length=30,
+        do_sample=False
+    )
+  example['summary'] = summary_result[0]['summary_text']
+  return example
+
+summarized_dataset = sample_subset.map(summarize_content)
+
+print("\n요약이 추가된 데이터셋 정보:")
+print(summarized_dataset)
+
+# 데이터셋 확인 (Pandas)
+df_check_summary = pd.DataFrame(summarized_dataset)
+print("\n요약 추가 후 데이터셋 미리보기 (DataFrame):")
+display(df_check_summary.head(10))
+
+translator = pipeline(
+    task="translation",
+    model="facebook/nllb-200-distilled-600M",
+    device=device
+)
+
+def translate(example):
+  translation_result = translator(
+      example['summary'],
+      src_lang="eng_Latn",
+      tgt_lang="kor_Hang",
+      max_length=150,
+      min_length=30,
+      do_sample=False
+  )
+  example['translation'] = translation_result[0]['translation_text']
+  return example
+
+translated_dataset = summarized_dataset.map(translate)
+
+print("\n번역이 추가된 데이터셋 정보:")
+print(translated_dataset)
+
+# 데이터셋 확인 (Pandas)
+df_check_translation = pd.DataFrame(translated_dataset)
+print("\n번역 추가 후 데이터셋 미리보기 (DataFrame):")
+display(df_check_translation.head(10))
+
+classifier = pipeline(
+    "zero-shot-classification",
+    model="facebook/bart-large-mnli"
+)
+
+def classification(example):
+    candidate_labels = [
+    "Beauty",
+    "Fashion",
+    "Food",
+    "Beverages",
+    "Home Appliances",
+    "Electronics",
+    "Books",
+    "Health",
+    "Toys",
+    "Sports",
+    "Kitchenware",
+    "Music",
+    "Gaming"
+    ]
+
+    classification_result = classifier(
+        example['summary'],
+        candidate_labels=candidate_labels
+    )
+
+    # 가장 높은 점수의 카테고리를 저장
+    example['category'] = classification_result['labels'][0]
+
+    return example
+
+classified_dataset = translated_dataset.map(classification)
+print(classified_dataset)
+
+df_check_classify = pd.DataFrame(classified_dataset)
+print("\n번역 추가 후 데이터셋 미리보기 (DataFrame):")
+display(df_check_classify.head(10))
